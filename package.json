@@ -10,7 +10,8 @@
     "dist:mac": "electron-builder --mac",
     "dist:win": "electron-builder --win",
     "dist:dir": "electron-builder --dir",
-    "icons": "bash scripts/make-icons.sh"
+    "icons": "bash scripts/make-icons.sh",
+    "screenshots": "electron scripts/screenshots/main.js"
   },
   "dependencies": {
     "bonjour-service": "^1.3.0",

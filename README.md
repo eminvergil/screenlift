@@ -7,6 +7,19 @@ Cast your whole screen or a single app window to a TV, from Mac or Windows. You 
 - **Any browser**: open a link or scan a QR code on a TV, phone or tablet (WebRTC, ~100 ms)
 - **Wired / AirPlay / Miracast displays**: full-screen at the display's refresh rate, with no encoding at all
 
+![ScreenLift casting a video player window to a Google TV with low latency](docs/live.png)
+
+<table>
+  <tr>
+    <td><img src="docs/main.png" alt="Pick a screen or window on the left and a TV on the right"></td>
+    <td><img src="docs/browser.png" alt="Browser target: open the address or scan the QR code on any TV, phone or tablet"></td>
+  </tr>
+  <tr>
+    <td align="center">Pick a screen or window, then a TV</td>
+    <td align="center">Or watch in any browser via QR code</td>
+  </tr>
+</table>
+
 ## Download
 
 Grab the latest `.dmg` (macOS) from [Releases](https://github.com/eminvergil/screenlift/releases).
@@ -152,6 +165,7 @@ src/web/viewer.html         Viewer page for TV / phone browsers
 src/assets/icon.png         Runtime icon
 build/icon.*                Icon source (SVG) and installer icons (.icns / .ico / .png)
 scripts/make-icons.sh       Generates all icons from the SVG
+scripts/screenshots/        Renders the README screenshots with demo data (npm run screenshots)
 ```
 
 ## License
