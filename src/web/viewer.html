@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ScreenLift</title>
+<link rel="icon" href="/icon.png">
+<link rel="apple-touch-icon" href="/icon.png">
+<style>
+  html, body { margin: 0; height: 100%; background: #000; color: #e8e8ee; font-family: -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
+  video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+  #overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px; text-align: center; padding: 24px; box-sizing: border-box; background: radial-gradient(circle at 50% 40%, #1d1f2b, #000 70%); }
+  #overlay.hidden { display: none; }
+  .logo { font-size: 64px; font-weight: 700; letter-spacing: -1px; display: flex; align-items: center; gap: 20px; }
+  .logo img { width: 104px; height: 104px; }
+  .logo span { color: #7c8cff; }
+  #msg { font-size: 26px; opacity: .85; max-width: 900px; }
+  .spinner { width: 48px; height: 48px; border: 5px solid #333a55; border-top-color: #7c8cff; border-radius: 50%; animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #controls { position: fixed; right: 24px; bottom: 24px; display: flex; gap: 12px; transition: opacity .4s; }
+  #controls.idle { opacity: 0; }
+  button { font: inherit; font-size: 20px; padding: 14px 22px; border-radius: 12px; border: 2px solid transparent; background: rgba(30,32,48,.85); color: #fff; cursor: pointer; }
+  button:focus { outline: none; border-color: #7c8cff; }
+  button.hidden { display: none; }
+  #stats { position: fixed; left: 24px; top: 24px; padding: 10px 14px; border-radius: 10px; background: rgba(10,12,20,.75);
+    font: 15px ui-monospace, Menlo, Consolas, monospace; white-space: pre; display: none; }
+  #stats.on { display: block; }
+</style>
+</head>
+<body>
+<video id="video" autoplay playsinline muted></video>
+<div id="overlay">
+  <div class="logo"><img src="/icon.png" alt="">ScreenLift</div>
+  <div class="spinner"></div>
+  <div id="msg">Connecting…</div>
+</div>
+<div id="controls">
+  <button id="unmute" class="hidden">🔊 Unmute</button>
+  <button id="fit">⤢ Fit: From app</button>
+  <button id="info">ℹ︎ Info</button>
+  <button id="fullscreen">⛶ Fullscreen</button>
+</div>
+<div id="stats"></div>
+<script>
+(function () {
+  var video = document.getElementById('video');
+  var overlay = document.getElementById('overlay');
+  var msgEl = document.getElementById('msg');
+  var unmuteBtn = document.getElementById('unmute');
+  var fsBtn = document.getElementById('fullscreen');
+  var controls = document.getElementById('controls');
+  var statsEl = document.getElementById('stats');
+  var infoBtn = document.getElementById('info');
+  var statsTimer = null, lastBytes = 0, lastTs = 0;
+  var key = location.pathname.split('/').filter(Boolean)[0] || '';
+  var ws = null, pc = null, retryTimer = null;
+  var fitBtn = document.getElementById('fit');
+  var remoteFit = 'contain', latencyMs = 0;
+  var localFit = null;
+  try { localFit = localStorage.getItem('screenlift-fit'); } catch (e) {}
+  var FIT_NAMES = { contain: 'Fit', cover: 'Fill', fill: 'Stretch', none: 'Original size' };
+  var FIT_ORDER = [null, 'contain', 'cover', 'fill', 'none'];
+
+  // If the video doesn't match the TV screen: fit (black bars), fill (crop), stretch, or 1:1 pixels.
+  function applyFit() {
+    var mode = localFit || remoteFit;
+    var s = video.style;
+    if (mode === 'none' && video.videoWidth) {
+      var dpr = window.devicePixelRatio || 1;
+      s.objectFit = 'fill';
+      s.width = video.videoWidth / dpr + 'px';
+      s.height = video.videoHeight / dpr + 'px';
+      s.left = '50%'; s.top = '50%'; s.right = 'auto'; s.bottom = 'auto';
+      s.transform = 'translate(-50%, -50%)';
+    } else {
+      s.objectFit = mode === 'none' ? 'contain' : mode;
+      s.width = ''; s.height = ''; s.left = ''; s.top = ''; s.right = ''; s.bottom = ''; s.transform = '';
+    }
+    fitBtn.textContent = '⤢ Fit: ' + (localFit ? FIT_NAMES[localFit] : 'From app (' + FIT_NAMES[remoteFit] + ')');
+  }
+  video.addEventListener('resize', applyFit);
+  fitBtn.onclick = function () {
+    localFit = FIT_ORDER[(FIT_ORDER.indexOf(localFit) + 1) % FIT_ORDER.length];
+    try { localFit ? localStorage.setItem('screenlift-fit', localFit) : localStorage.removeItem('screenlift-fit'); } catch (e) {}
+    applyFit();
+  };
+
+  // Latency / smoothness trade-off: receiver buffer (0 = lowest latency).
+  function applyLatency() {
+    if (!pc || !pc.getReceivers) return;
+    pc.getReceivers().forEach(function (r) {
+      try { if ('jitterBufferTarget' in r) r.jitterBufferTarget = latencyMs; } catch (e) {}
+    });
+  }
+
+  // Which codecs this device can decode (in hardware); the sender picks the most efficient one.
+  function detectCaps() {
+    var names = { H264: 'video/H264', H265: 'video/H265', AV1: 'video/AV1', VP9: 'video/VP9', VP8: 'video/VP8' };
+    var have = {};
+    try {
+      RTCRtpReceiver.getCapabilities('video').codecs.forEach(function (c) { have[c.mimeType.toLowerCase()] = true; });
+    } catch (e) { return Promise.resolve(null); }
+    var caps = {};
+    var jobs = Object.keys(names).map(function (k) {
+      var mime = names[k];
+      if (!have[mime.toLowerCase()]) { caps[k] = { supported: false, hw: false }; return Promise.resolve(); }
+      if (!navigator.mediaCapabilities || !navigator.mediaCapabilities.decodingInfo) { caps[k] = { supported: true, hw: null }; return Promise.resolve(); }
+      return navigator.mediaCapabilities.decodingInfo({
+        type: 'webrtc',
+        video: { contentType: mime, width: 1920, height: 1080, bitrate: 10000000, framerate: 60 }
+      }).then(function (r) {
+        caps[k] = { supported: true, hw: !!(r && r.powerEfficient) };
+      }).catch(function () { caps[k] = { supported: true, hw: null }; });
+    });
+    return Promise.all(jobs).then(function () { return caps; });
+  }
+  var capsPromise = detectCaps();
+
+  function show(text) {
+    msgEl.textContent = text;
+    overlay.className = '';
+  }
+
+  function resetPeer() {
+    if (pc) { try { pc.close(); } catch (e) {} }
+    pc = null;
+    video.srcObject = null;
+  }
+
+  function send(obj) {
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+  }
+
+  function createPeer() {
+    resetPeer();
+    pc = new RTCPeerConnection({ iceServers: [] });
+    pc.onicecandidate = function (e) {
+      if (e.candidate) send({ type: 'signal', data: { candidate: e.candidate } });
+    };
+    pc.ontrack = function (e) {
+      try { if ('jitterBufferTarget' in e.receiver) e.receiver.jitterBufferTarget = latencyMs; } catch (err) {}
+      var stream = e.streams && e.streams[0] ? e.streams[0] : new MediaStream([e.track]);
+      if (video.srcObject !== stream) video.srcObject = stream;
+      if (e.track.kind === 'audio' && video.muted) { unmuteBtn.className = ''; unmuteBtn.focus(); }
+      var p = video.play();
+      if (p && p.catch) p.catch(function () {});
+    };
+    pc.onconnectionstatechange = function () {
+      var st = pc && pc.connectionState;
+      if (st === 'connected') overlay.className = 'hidden';
+      if (st === 'failed') { show('Connection lost, retrying…'); scheduleRetry(); }
+    };
+    // For older browsers without connection state events: hide the overlay once video plays.
+    video.onplaying = function () { overlay.className = 'hidden'; };
+    return pc;
+  }
+
+  function scheduleRetry() {
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(function () { send({ type: 'retry' }); }, 2000);
+  }
+
+  function onSignal(data) {
+    if (data.config) {
+      if (data.config.fit) remoteFit = data.config.fit;
+      if (typeof data.config.latency === 'number') latencyMs = data.config.latency;
+      applyFit();
+      applyLatency();
+      return;
+    }
+    if (data.sdp) {
+      if (data.sdp.type === 'offer') createPeer();
+      if (!pc) return;
+      pc.setRemoteDescription(data.sdp).then(function () {
+        if (data.sdp.type !== 'offer') return;
+        return pc.createAnswer().then(function (answer) {
+          return pc.setLocalDescription(answer);
+        }).then(function () {
+          send({ type: 'signal', data: { sdp: pc.localDescription } });
+        });
+      }).catch(function (err) { show('Error: ' + err.message); });
+    } else if (data.candidate && pc) {
+      pc.addIceCandidate(data.candidate).catch(function () {});
+    }
+  }
+
+  function connect() {
+    var proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+    ws = new WebSocket(proto + location.host + '/ws?role=viewer&k=' + encodeURIComponent(key));
+    ws.onopen = function () {
+      show('Waiting for stream… In the ScreenLift app on your computer, choose the “Via browser” target and start.');
+      capsPromise.then(function (caps) { send({ type: 'caps', caps: caps }); });
+    };
+    ws.onmessage = function (e) {
+      var msg;
+      try { msg = JSON.parse(e.data); } catch (err) { return; }
+      if (msg.type === 'signal') onSignal(msg.data);
+      if (msg.type === 'sender-gone') { resetPeer(); show('Stream stopped. Waiting for it to restart…'); }
+    };
+    ws.onclose = function () {
+      resetPeer();
+      show('Can’t reach the computer, reconnecting…');
+      setTimeout(connect, 2000);
+    };
+  }
+
+  if (!window.RTCPeerConnection) {
+    show('This browser doesn’t support live video (no WebRTC). Try the DLNA or Chromecast target in the app.');
+    return;
+  }
+
+  function updateStats() {
+    if (!pc || !pc.getStats) return;
+    pc.getStats().then(function (report) {
+      var lines = [];
+      report.forEach(function (r) {
+        if (r.type === 'inbound-rtp' && r.kind === 'video') {
+          var mbps = lastTs && r.timestamp > lastTs ? ((r.bytesReceived - lastBytes) * 8 / ((r.timestamp - lastTs) / 1000) / 1e6).toFixed(1) : '…';
+          lastBytes = r.bytesReceived; lastTs = r.timestamp;
+          lines.push((r.frameWidth || 0) + '×' + (r.frameHeight || 0) + '  ' + Math.round(r.framesPerSecond || 0) + ' fps');
+          lines.push(mbps + ' Mbit/s   dropped frames: ' + (r.framesDropped || 0));
+          lines.push('decoder: ' + (r.decoderImplementation || '?') + (r.powerEfficientDecoder ? ' (hardware)' : ''));
+          var codec = r.codecId && report.get ? report.get(r.codecId) : null;
+          if (codec) lines.push('codec: ' + codec.mimeType.replace('video/', '') + '   buffer: ' + latencyMs + ' ms');
+        }
+      });
+      statsEl.textContent = lines.join('\n') || 'Waiting for video…';
+    });
+  }
+  function toggleStats() {
+    var on = statsEl.className !== 'on';
+    statsEl.className = on ? 'on' : '';
+    clearInterval(statsTimer);
+    if (on) { updateStats(); statsTimer = setInterval(updateStats, 1000); }
+  }
+  infoBtn.onclick = toggleStats;
+  document.addEventListener('keydown', function (e) { if (e.key === 'i' || e.key === 'I') toggleStats(); });
+
+  unmuteBtn.onclick = function () {
+    video.muted = false;
+    video.play();
+    unmuteBtn.className = 'hidden';
+    fsBtn.focus();
+  };
+  fsBtn.onclick = function () {
+    var el = document.documentElement;
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
+      (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    } else {
+      var req = el.requestFullscreen || el.webkitRequestFullscreen;
+      if (req) req.call(el);
+    }
+  };
+  var idleTimer;
+  function wake() {
+    controls.className = '';
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(function () { controls.className = 'idle'; }, 4000);
+  }
+  document.addEventListener('mousemove', wake);
+  document.addEventListener('keydown', wake);
+  wake();
+  applyFit();
+  fsBtn.focus();
+  connect();
+})();
+</script>
+</body>
+</html>
