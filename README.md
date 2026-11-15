@@ -136,6 +136,7 @@ Settings are remembered on this computer.
 
 ## Troubleshooting
 
+- **The TV isn't listed on a Mac**: macOS only lets an app use the local network after you allow it under **System Settings → Privacy & Security → Local Network**. ScreenLift detects when it's blocked and shows a button that opens that page. Turn ScreenLift on there and it scans again automatically.
 - **The TV isn't listed**: make sure the TV is on and on the same Wi-Fi network as the computer. Guest networks and "AP isolation" stop devices from seeing each other. In that case, use the *Via browser* target.
 - **The port in the address isn't 8765**: if that port is taken by another program, ScreenLift tries 8766 and 8767, then picks a random port.
 - **"Can't reach the computer" in the browser**: check that you typed the full address (including the 4-letter code at the end) and that the firewall allows the connection.

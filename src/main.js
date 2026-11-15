@@ -220,6 +220,27 @@ async function discoverTargets() {
   return [...d, ...c].map(publicDevice);
 }
 
+// macOS (15+) blocks local-network traffic per app until the user allows it under
+// System Settings → Privacy & Security → Local Network. The permission is tied to the app's
+// bundle ID, so a renamed or newly installed build starts out blocked. When blocked, every
+// send to a LAN or multicast address fails with EHOSTUNREACH, so probe with one mDNS packet.
+function localNetworkStatus() {
+  if (!isMac) return Promise.resolve('ok');
+  return new Promise((resolve) => {
+    const sock = require('dgram').createSocket({ type: 'udp4', reuseAddr: true });
+    const done = (result) => {
+      try { sock.close(); } catch (e) { /* ignore */ }
+      resolve(result);
+    };
+    sock.on('error', () => done('unknown'));
+    sock.bind(0, () => {
+      sock.send(Buffer.alloc(12), 5353, '224.0.0.251', (err) => {
+        done(err && (err.code === 'EHOSTUNREACH' || err.code === 'EPERM') ? 'denied' : 'ok');
+      });
+    });
+  });
+}
+
 function publicDevice(dev) {
   return { id: dev.id, kind: dev.kind, name: dev.name, model: dev.model, host: dev.host };
 }
@@ -319,6 +340,11 @@ function registerIpc() {
 
   ipcMain.handle('open-permission-settings', () => {
     if (isMac) shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
+  });
+
+  ipcMain.handle('local-network', () => localNetworkStatus());
+  ipcMain.handle('open-local-network-settings', () => {
+    if (isMac) shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork');
   });
 
   ipcMain.handle('open-display-settings', () => {

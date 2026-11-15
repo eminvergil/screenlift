@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld('screenlift', {
   permissions: invoke('permissions'),
   openPermissionSettings: invoke('open-permission-settings'),
   openDisplaySettings: invoke('open-display-settings'),
+  localNetwork: invoke('local-network'),
+  openLocalNetworkSettings: invoke('open-local-network-settings'),
   askMicrophone: invoke('ask-microphone'),
   sources: invoke('sources'),
   displays: invoke('displays'),

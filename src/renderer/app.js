@@ -392,9 +392,17 @@ function renderTargets() {
     )
     .join('');
   $('tv-empty').classList.toggle('hidden', devices.length > 0 && !scanning);
-  $('tv-empty').textContent = scanning
-    ? 'Searching for TVs… The TV must be on and on the same Wi-Fi network as this computer.'
-    : 'No TVs found. Make sure the TV is on and on the same network, then scan again. If it still isn’t found, use “Via browser”.';
+  if (!scanning && state.lanDenied && !devices.length) {
+    $('tv-empty').innerHTML =
+      '<b>macOS is blocking ScreenLift from your local network</b>, so it can’t see any TVs. ' +
+      'Turn on ScreenLift under System Settings → Privacy & Security → Local Network, then come back here. ' +
+      '<button class="btn small" id="lan-open">Open Local Network settings</button>';
+    $('lan-open').addEventListener('click', () => api.openLocalNetworkSettings());
+  } else {
+    $('tv-empty').textContent = scanning
+      ? 'Searching for TVs… The TV must be on and on the same Wi-Fi network as this computer.'
+      : 'No TVs found. Make sure the TV is on and on the same network, then scan again. If it still isn’t found, use “Via browser”.';
+  }
 
   $('web-list').innerHTML = targetRow(
     'web',
@@ -451,6 +459,8 @@ async function scan() {
   try {
     const found = await api.discover();
     for (const d of found) state.devices.set(d.id, d);
+    // Nothing found on a Mac: check whether macOS is blocking local-network access for this app.
+    state.lanDenied = !state.devices.size && (await api.localNetwork().catch(() => 'ok')) === 'denied';
   } catch (e) {
     toast('TV scan failed: ' + e.message, true);
   } finally {
@@ -1126,6 +1136,8 @@ async function init() {
   // Refresh thumbnails when the window regains focus.
   window.addEventListener('focus', () => {
     if (state.phase === 'idle') refreshSources();
+    // Coming back from System Settings after allowing Local Network access: scan again.
+    if (state.lanDenied) scan();
   });
   setInterval(() => {
     if (document.hasFocus() && state.phase === 'idle') refreshSources();
